@@ -1,0 +1,225 @@
+openapi: 3.0.3
+info:
+  title: CTFd Flight Ops Frontend API
+  version: 1.0.0
+  description: |
+    Frontend-facing API exposed by the CTFd Flight Ops plugin.
+    This contract exposes only essential flight status fields for the UI.
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+servers:
+  - url: /
+security: []
+paths:
+  /api/flight_ops/spec:
+    get:
+      operationId: getFlightOpsSpec
+      summary: Read frontend polling strategy metadata
+      security: []
+      responses:
+        "200":
+          description: Frontend polling metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FrontendSpec"
+        "401":
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
+
+  /api/flight_ops/{flightPlan}:
+    get:
+      operationId: getFlightStatus
+      summary: Read minimal status for a caller and flight plan
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/FlightPlanName"
+      responses:
+        "200":
+          description: Flight status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FlightOpsStatus"
+        "429":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+
+    post:
+      operationId: mutateFlightStatus
+      summary: Create, extend, or terminate a challenge flight
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/FlightPlanName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ActionRequest"
+      responses:
+        "200":
+          description: Updated flight status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FlightOpsStatus"
+        "400":
+          $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+
+components:
+  parameters:
+    FlightPlanName:
+      name: flightPlan
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^[a-z0-9-]+$"
+
+  responses:
+    Error:
+      description: Error response
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+
+  schemas:
+    FrontendSpec:
+      type: object
+      additionalProperties: false
+      properties:
+        apiVersion:
+          type: string
+          example: v1
+        kind:
+          type: string
+          example: flight-ops-frontend-spec
+        polling:
+          type: object
+          additionalProperties: false
+          properties:
+            baseIntervalMs:
+              type: integer
+              minimum: 1000
+            maxIntervalMs:
+              type: integer
+              minimum: 1000
+            backoffMultiplier:
+              type: number
+              minimum: 1
+            jitterMs:
+              type: integer
+              minimum: 0
+            pollStatuses:
+              type: array
+              items:
+                type: string
+          required:
+            - baseIntervalMs
+            - maxIntervalMs
+            - backoffMultiplier
+            - jitterMs
+            - pollStatuses
+      required:
+        - apiVersion
+        - kind
+        - polling
+
+    ActionRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        action:
+          type: string
+          enum:
+            - create
+            - extend
+            - terminate
+      required:
+        - action
+
+    FlightOpsStatus:
+      type: object
+      additionalProperties: false
+      properties:
+        apiVersion:
+          type: string
+          example: v1
+        kind:
+          type: string
+          example: flight-ops-status
+        flight_name:
+          type: string
+          nullable: true
+        connection_strings:
+          type: array
+          items:
+            type: string
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        status:
+          type: string
+          enum:
+            - missing
+            - pending
+            - ready
+            - landed
+            - failed
+            - unknown
+      required:
+        - apiVersion
+        - kind
+        - flight_name
+        - connection_strings
+        - expires_at
+        - started_at
+        - status
+
+    ErrorEnvelope:
+      type: object
+      additionalProperties: false
+      properties:
+        apiVersion:
+          type: string
+        kind:
+          type: string
+        error:
+          type: object
+          additionalProperties: false
+          properties:
+            type:
+              type: string
+            message:
+              type: string
+          required:
+            - type
+            - message
+      required:
+        - apiVersion
+        - kind
+        - error

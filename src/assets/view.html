@@ -1,0 +1,29 @@
+{% extends 'challenge.html' %}
+{% block kubectf_info %}
+<div class="mb-2">
+    <span class="challenge-connection-info">
+        <div class="mb-3 text-center deployment-actions">
+            <div class="alert alert-info" id="flight-ops-alert">Loading challenge status...</div>
+
+            <input class="form-control d-none" type="text" id="flight-plan-name" placeholder="Flight Plan Name"
+                value="{{ challenge.template_name | safe }}" disabled />
+
+            <span>
+                <button onclick="window.flightOpsController.create(this)"
+                    data-flight-plan="{{ challenge.template_name | safe }}" class="create-chal btn btn-primary d-none">
+                    <small style="color:white;"><i class="fas"></i> Start Challenge</small>
+                </button>
+                <button onclick="window.flightOpsController.extend(this)"
+                    data-flight-plan="{{ challenge.template_name | safe }}" class="extend-chal btn btn-info d-none">
+                    <small style="color:white;"><i class="fas"></i> Extend Challenge</small>
+                </button>
+                <button onclick="window.flightOpsController.terminate(this)"
+                    data-flight-plan="{{ challenge.template_name | safe }}"
+                    class="terminate-chal btn btn-danger d-none">
+                    <small style="color:white;"><i class="fas"></i> Terminate Challenge</small>
+                </button>
+            </span>
+        </div>
+    </span>
+</div>
+{% endblock %}

@@ -1,0 +1,72 @@
+{% extends "admin/base.html" %}
+
+{% block content %}
+<div class="jumbotron">
+    <div class="container">
+        <h1>Flight Ops Config</h1>
+    </div>
+</div>
+<div class="container">
+    <div class="col-md-7 offset-md-2">
+        {% if alert != None %}
+        <div>
+            <div class="alert alert-{{ alert.type }} alert-dismissable text-center" role="alert">
+                <span>{{ alert.message }}</span>
+                <button type="button" class="close" data-dismiss="alert" aria-label="Close">
+                    <span aria-hidden="true">×</span>
+                </button>
+            </div>
+        </div>
+        {% endif %}
+
+        <form method="post" accept-charset="utf-8" autocomplete="off">
+            {% with form = Forms.setup.SetupForm() %}
+            <div class="form-group">
+                <b><label for="dispatcher_url">Dispatcher URL</label></b>
+                <input class="form-control" id="dispatcher_url" name="dispatcher_url" required type="text"
+                    value="{{ dispatcher_url }}" placeholder="https://dispatcher.example.com">
+            </div>
+            <div class="form-group">
+                <b><label for="jwt_secret">JWT Secret</label></b>
+                <input class="form-control" id="jwt_secret" name="jwt_secret" type="password"
+                    autocomplete="new-password" placeholder="Set via FLIGHT_OPS_JWT_SECRET">
+                <small class="form-text text-muted">Leave blank to keep the environment-provided secret.</small>
+            </div>
+            <div class="form-group">
+                <b><label for="jwt_issuer">JWT Issuer</label></b>
+                <input class="form-control" id="jwt_issuer" name="jwt_issuer" required type="text"
+                    value="{{ jwt_issuer }}" placeholder="issuer1">
+            </div>
+            <div class="form-group">
+                <b><label for="jwt_audience">JWT Audience</label></b>
+                <input class="form-control" id="jwt_audience" name="jwt_audience" required type="text"
+                    value="{{ jwt_audience }}" placeholder="ground-control-dispatcher">
+            </div>
+            <div class="form-group">
+                <b><label for="jwt_expiration">JWT Expiration (seconds)</label></b>
+                <input class="form-control" id="jwt_expiration" name="jwt_expiration" required type="number" min="30"
+                    max="3600" value="{{ jwt_expiration }}">
+            </div>
+            <div class="form-group">
+                <b><label for="terminal_id">Terminal ID Claim</label></b>
+                <input class="form-control" id="terminal_id" name="terminal_id" required type="text"
+                    value="{{ terminal_id }}" placeholder="ctfd">
+            </div>
+            <div class="form-group">
+                <b><label for="request_timeout">Dispatcher Timeout (seconds)</label></b>
+                <input class="form-control" id="request_timeout" name="request_timeout" required type="number" min="1"
+                    max="60" value="{{ request_timeout }}">
+            </div>
+            <div class="row pt-3">
+                <div class="col-md-6"></div>
+                <div class="col-md-6">
+                    <input class="btn btn-md btn-primary btn-outlined float-right" id="_submit" name="_submit"
+                        type="submit" value="Save">
+                </div>
+            </div>
+            {{ form.nonce() }}
+            {% endwith %}
+        </form>
+    </div>
+</div>
+{% endblock %}
