@@ -35,40 +35,4 @@
     <input type="number" class="form-control chal-value" name="value" value="{{ challenge.value }}" disabled>
 </div>
 
-<div class="form-group">
-    <label for="value">
-        Initial Value<br>
-        <small class="form-text text-muted">Initial challenge points.</small>
-    </label>
-    <input type="number" class="form-control chal-initial" name="initial" value="{{ challenge.initial }}" required>
-</div>
-
-<div class="form-group">
-    <label for="value">
-        Decay Function<br>
-        <small class="form-text text-muted">How dynamic value is calculated.</small>
-    </label>
-    <select name="function" class="custom-select">
-        <option value="linear" {% if challenge.function=="linear" %}selected{% endif %}>Linear</option>
-        <option value="logarithmic" {% if challenge.function=="logarithmic" %}selected{% endif %}>Logarithmic</option>
-        <option value="logarithmic_custom" {% if challenge.function=="logarithmic_custom" %}selected{% endif %}>
-            Logarithmic Custom</option>
-    </select>
-</div>
-
-<div class="form-group">
-    <label for="value">
-        Decay<br>
-        <small class="form-text text-muted">Decay parameter.</small>
-    </label>
-    <input type="number" class="form-control chal-decay" min="1" name="decay" value="{{ challenge.decay }}" required>
-</div>
-
-<div class="form-group">
-    <label for="value">
-        Minimum Value<br>
-        <small class="form-text text-muted">Minimum challenge points.</small>
-    </label>
-    <input type="number" class="form-control chal-minimum" name="minimum" value="{{ challenge.minimum }}" required>
-</div>
 {% endblock %}

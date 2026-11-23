@@ -9,6 +9,10 @@ CTFd._internal.challenge.postRender = function () { };
     const DEFAULT_MAX_POLL_MS = 30000;
     const DEFAULT_BACKOFF_MULTIPLIER = 1.6;
     const DEFAULT_JITTER_MS = 750;
+    const DEFAULT_READY_POLL_MS = 30000;
+    const DEFAULT_READY_JITTER_MS = 15000;
+    const TERMINATING_POLL_MS = 1500;
+    const TERMINATING_MAX_ATTEMPTS = 20;
 
     let pollTimer = null;
     let currentPollInterval = DEFAULT_POLL_MS;
@@ -16,7 +20,12 @@ CTFd._internal.challenge.postRender = function () { };
     let maxPollInterval = DEFAULT_MAX_POLL_MS;
     let backoffMultiplier = DEFAULT_BACKOFF_MULTIPLIER;
     let jitterMs = DEFAULT_JITTER_MS;
+    let readyPollInterval = DEFAULT_READY_POLL_MS;
+    let readyJitterMs = DEFAULT_READY_JITTER_MS;
     let pollStatuses = ["pending", "ready"];
+    let lastRenderedPhase = "unknown";
+    let terminatingAttempts = 0;
+    let restartAfterTerminate = false;
 
     function challengeName() {
         const element = document.getElementById("flight-plan-name");
@@ -52,8 +61,9 @@ CTFd._internal.challenge.postRender = function () { };
     }
 
     function setButtons(status) {
-        const canCreate = ["missing", "landed", "failed", "unknown"].includes(status);
+        const canCreate = ["missing", "landed"].includes(status);
         const canMutate = ["pending", "ready"].includes(status);
+        const canTerminate = ["pending", "ready", "failed", "unknown"].includes(status);
 
         const create = document.querySelector(".create-chal");
         const extend = document.querySelector(".extend-chal");
@@ -66,7 +76,7 @@ CTFd._internal.challenge.postRender = function () { };
             extend.classList.toggle("d-none", !canMutate);
         }
         if (terminate) {
-            terminate.classList.toggle("d-none", !canMutate);
+            terminate.classList.toggle("d-none", !canTerminate);
         }
     }
 
@@ -109,6 +119,31 @@ CTFd._internal.challenge.postRender = function () { };
         container.append(row);
     }
 
+    function expiresCountDown(time) {
+        // Generates a countdown element, which automatically updates every second until the time is reached, if the object is still in the html
+        const countdown = document.createElement("span");
+        time = new Date(time).getTime();
+        function updateCountdown() {
+            const now = new Date().getTime();
+            const distance = time - now;
+
+            if (distance < 0) {
+                countdown.textContent = "Expired";
+                return;
+            }
+
+            const minutes = Math.floor(distance / (1000 * 60)).toString();
+            const seconds = Math.floor((distance % (1000 * 60)) / 1000).toString().padStart(2, '0');
+            countdown.textContent = minutes + "m " + seconds + "s";
+
+            // Schedule the next update
+            setTimeout(updateCountdown, 1000);
+        }
+
+        updateCountdown();
+        return countdown;
+    }
+
     function renderConnections(payload) {
         const alert = document.getElementById("flight-ops-alert");
         if (!alert) {
@@ -117,21 +152,18 @@ CTFd._internal.challenge.postRender = function () { };
 
         const lines = [];
         if (payload.expires_at) {
-            lines.push("Expires at " + payload.expires_at);
-        }
-
-        if (lines.length > 0) {
+            // Convert expires_at to a countdown timer
             alert.append(document.createElement("br"));
-            lines.forEach((line) => {
-                alert.append(document.createTextNode(line));
-                alert.append(document.createElement("br"));
-            });
+            alert.append(document.createTextNode("Expires:"));
+            alert.append(document.createElement("br"));
+            const countdown = expiresCountDown(payload.expires_at);
+            alert.append(countdown);
         }
 
         if (payload.connection_strings && payload.connection_strings.length) {
             const heading = document.createElement("div");
             heading.classList.add("mt-2", "font-weight-bold");
-            heading.textContent = "Connection details";
+            heading.textContent = "Connection details:";
             alert.append(heading);
 
             const list = document.createElement("div");
@@ -142,16 +174,19 @@ CTFd._internal.challenge.postRender = function () { };
         }
     }
 
-    function computeNextPollDelay() {
+    function computeNextPollDelay(phase) {
+        if (phase === "ready") {
+            return readyPollInterval + Math.floor(Math.random() * readyJitterMs);
+        }
         const jitter = Math.floor(Math.random() * jitterMs);
         return Math.min(maxPollInterval, currentPollInterval + jitter);
     }
 
-    function scheduleNextPoll() {
+    function scheduleNextPoll(phase) {
         stopPolling();
         pollTimer = setTimeout(async function () {
             await refreshStatus();
-        }, computeNextPollDelay());
+        }, computeNextPollDelay(phase));
     }
 
     function resetPollInterval() {
@@ -166,9 +201,9 @@ CTFd._internal.challenge.postRender = function () { };
     }
 
     function renderStatus(payload) {
-        const phase = payload && payload.status ? payload.status : "unknown";
         const flightName = payload && payload.flight_name ? payload.flight_name : "none";
-        const message = "Status: " + phase; //  + ", Flight: " + flightName
+        let phase = payload && payload.status ? payload.status : "unknown";
+        let message = "Status: " + phase; //  + ", Flight: " + flightName
 
         let type = "alert-info";
         if (phase === "ready") {
@@ -177,16 +212,34 @@ CTFd._internal.challenge.postRender = function () { };
             type = "alert-warning";
         } else if (phase === "failed") {
             type = "alert-danger";
+        } else if (phase === "unknown") {
+            type = "alert-warning";
+        }
+
+        // Map phase to a better message
+        if (phase === "missing") {
+            message = "No challenge instance found. Start challenge to get started.";
+        } else if (phase === "unknown") {
+            message = "Loading instance status...";
+        } else if (phase === "pending") {
+            message = "Challenge instance is being provisioned. Please wait...";
+        } else if (phase === "ready") {
+            message = "Challenge instance is ready!";
+        } else if (phase === "failed") {
+            message = "Challenge instance failed to start. Please try again.";
+        } else if (phase === "landed") {
+            message = "Challenge instance has been terminated.";
         }
 
         setAlert(message, type);
         setButtons(phase);
         renderConnections(payload || {});
+        lastRenderedPhase = phase;
 
         const shouldPoll = pollStatuses.includes(phase);
 
         if (shouldPoll) {
-            scheduleNextPoll();
+            scheduleNextPoll(phase);
         } else {
             stopPolling();
         }
@@ -201,18 +254,17 @@ CTFd._internal.challenge.postRender = function () { };
         }
 
         if (!response.ok) {
+            const apiMessage = (body && body.error && body.error.message) || (body && body.message);
+
             if (response.status === 429) {
                 const retryAfter = response.headers.get("Retry-After");
                 const waitHint = retryAfter ? " Please wait " + retryAfter + " seconds." : "";
-                const apiMessage = (body && body.error && body.error.message) || body.message;
-                throw new Error(apiMessage || ("Slow down. This action was performed too quickly." + waitHint));
+                throw new Error(
+                    (apiMessage || "Slow down. This action was performed too quickly.") + waitHint
+                );
             }
-
-            const message =
-                (body && body.error && body.error.message) ||
-                body.message ||
-                "Failed to reach the backend.";
-            throw new Error(message);
+            
+            throw new Error(apiMessage || ("Backend error (HTTP " + response.status + ")."));
         }
 
         return body;
@@ -247,8 +299,7 @@ CTFd._internal.challenge.postRender = function () { };
         } catch (err) {
             increasePollInterval();
             setAlert(
-                (err.message || "Unable to fetch challenge status.") +
-                ". Retrying with backoff.",
+                (err.message || "Unable to fetch challenge status."),
                 "alert-danger"
             );
             scheduleNextPoll();
@@ -262,12 +313,76 @@ CTFd._internal.challenge.postRender = function () { };
         }
     }
 
+    // The backend keeps reporting the pre-land state for about a second after a terminate
+    function beginTerminatingOverride(wasFailed) {
+        terminatingAttempts = 0;
+        restartAfterTerminate = wasFailed;
+        stopPolling();
+        setAlert("Challenge instance is shutting down...", "alert-warning");
+        setButtons("terminating");
+        scheduleTerminatingPoll();
+    }
+
+    function scheduleTerminatingPoll() {
+        stopPolling();
+        pollTimer = setTimeout(async function () {
+            await pollDuringTermination();
+        }, TERMINATING_POLL_MS);
+    }
+
+    async function pollDuringTermination() {
+        terminatingAttempts += 1;
+
+        let payload;
+        try {
+            payload = await requestStatus("GET");
+        } catch (err) {
+            if (terminatingAttempts >= TERMINATING_MAX_ATTEMPTS) {
+                increasePollInterval();
+                setAlert(err.message || "Unable to confirm shutdown status.", "alert-danger");
+                scheduleNextPoll();
+            } else {
+                scheduleTerminatingPoll();
+            }
+            return;
+        }
+
+        const phase = payload && payload.status ? payload.status : "unknown";
+        const confirmed = ["missing", "landed"].includes(phase);
+
+        if (!confirmed && terminatingAttempts < TERMINATING_MAX_ATTEMPTS) {
+            scheduleTerminatingPoll();
+            return;
+        }
+
+        resetPollInterval();
+
+        if (!confirmed) {
+            renderStatus(payload);
+            setAlert("Shutdown is taking longer than expected. Please try again.", "alert-warning");
+            return;
+        }
+
+        if (restartAfterTerminate) {
+            restartAfterTerminate = false;
+            await runAction(null, "create");
+            return;
+        }
+
+        renderStatus(payload);
+    }
+
     async function runAction(button, action) {
+        const wasFailed = lastRenderedPhase === "failed";
         toggleLoading(button, true);
         try {
             const payload = await requestStatus("POST", action);
             resetPollInterval();
-            renderStatus(payload);
+            if (action === "terminate") {
+                beginTerminatingOverride(wasFailed);
+            } else {
+                renderStatus(payload);
+            }
         } catch (err) {
             setAlert(err.message || "Action failed.", "alert-danger");
         } finally {
@@ -293,17 +408,26 @@ CTFd._internal.challenge.postRender = function () { };
                 if (Number.isInteger(polling.jitterMs)) {
                     jitterMs = polling.jitterMs;
                 }
+                if (Number.isInteger(polling.readyIntervalMs)) {
+                    readyPollInterval = polling.readyIntervalMs;
+                }
+                if (Number.isInteger(polling.readyJitterMs)) {
+                    readyJitterMs = polling.readyJitterMs;
+                }
                 if (Array.isArray(polling.pollStatuses)) {
                     pollStatuses = polling.pollStatuses;
                 }
             }
             resetPollInterval();
         } catch (err) {
+            console.warn("Failed to load spec from backend. Using default polling configuration.", err);
             basePollInterval = DEFAULT_POLL_MS;
             maxPollInterval = DEFAULT_MAX_POLL_MS;
             backoffMultiplier = DEFAULT_BACKOFF_MULTIPLIER;
             jitterMs = DEFAULT_JITTER_MS;
-            pollStatuses = ["pending", "ready"];
+            readyPollInterval = DEFAULT_READY_POLL_MS;
+            readyJitterMs = DEFAULT_READY_JITTER_MS;
+            pollStatuses = ["pending", "ready", "unknown"];
             resetPollInterval();
         }
     }

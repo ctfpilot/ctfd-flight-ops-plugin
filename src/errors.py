@@ -34,3 +34,9 @@ RateLimitError = PluginError(
     "This action was performed too quickly. Please wait and try again.",
     429,
 )
+
+MaxChallengesError = PluginError(
+    "MaxChallengesError",
+    "Maximum number of challenges reached. Please terminate an existing challenge before starting a new one.",
+    409,
+)

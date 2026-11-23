@@ -30,6 +30,7 @@ from .config import (
 from .errors import (
     ConfigurationError,
     InvalidRequest,
+    MaxChallengesError,
     NotAuthenticatedError,
     RateLimitError,
     UnknownError,
@@ -40,6 +41,7 @@ from .lib import (
     DispatcherClient,
     DispatcherError,
     build_status_response,
+    build_status_responses,
     format_error_response,
     select_relevant_flight,
 )
@@ -49,6 +51,8 @@ POLL_BASE_INTERVAL_MS = 5000
 POLL_MAX_INTERVAL_MS = 30000
 POLL_BACKOFF_MULTIPLIER = 1.6
 POLL_JITTER_MS = 750
+POLL_READY_INTERVAL_MS = 30000
+POLL_READY_JITTER_MS = 15000
 
 
 blueprint = Blueprint(
@@ -154,6 +158,43 @@ def _load_current_flight(client: DispatcherClient, challenge: str):
     items = payload.get("items") or []
     return select_relevant_flight(items)
 
+def _load_all_flights(client: DispatcherClient):
+    payload = client.list_flights()
+    return payload.get("items") or []
+
+
+def _dispatcher_error_response(exc: DispatcherError):
+    status_code = exc.status_code
+
+    if status_code in (401, 403):
+        return format_error_response(NotAuthenticatedError) + ({},)
+
+    if status_code == 409:
+        return format_error_response(MaxChallengesError) + ({},)
+
+    if status_code == 429:
+        payload, status = format_error_response(RateLimitError, exc.client_message)
+        headers = {}
+        if exc.retryAfter:
+            headers["Retry-After"] = str(exc.retryAfter)
+        return payload, status, headers
+
+    if status_code in (500, 502, 503, 504):
+        return format_error_response(UpstreamUnavailable) + ({},)
+
+    if 400 <= status_code < 500:
+        return format_error_response(InvalidRequest, exc.client_message) + ({},)
+
+    return format_error_response(UnknownError) + ({},)
+
+
+def _error_response(payload, status, headers):
+    response = jsonify(payload)
+    response.status_code = status
+    for key, value in headers.items():
+        response.headers[key] = value
+    return response
+
 
 @blueprint.route("/api/flight_ops/spec", methods=["GET"])
 @bypass_csrf_protection
@@ -168,10 +209,74 @@ def get_spec():
             "maxIntervalMs": POLL_MAX_INTERVAL_MS,
             "backoffMultiplier": POLL_BACKOFF_MULTIPLIER,
             "jitterMs": POLL_JITTER_MS,
-            "pollStatuses": ["pending", "ready"],
+            "readyIntervalMs": POLL_READY_INTERVAL_MS,
+            "readyJitterMs": POLL_READY_JITTER_MS,
+            "pollStatuses": ["pending", "ready", "unknown"],
         },
     }
     return jsonify(spec), 200
+
+
+def _challenge_ids_by_template_name():
+    from .flight_challenge import FlightOpsChallenge
+
+    rows = FlightOpsChallenge.query.with_entities(
+        FlightOpsChallenge.id, FlightOpsChallenge.template_name
+    ).all()
+
+    mapping = {}
+    for challenge_id, template_name in rows:
+        mapping.setdefault(template_name, []).append(challenge_id)
+    return mapping
+
+
+@blueprint.route("/api/flight_ops", methods=["GET"])
+@bypass_csrf_protection
+@during_ctf_time_only
+@ratelimit(method="GET", limit=120, interval=60, key_prefix="rl_fo_get")
+def challenges_status():
+    started = time.time()
+
+    owner_terminal = _get_owner_and_terminal()
+    if not owner_terminal:
+        payload, status = format_error_response(NotAuthenticatedError)
+        return jsonify(payload), status
+
+    owner, terminal = owner_terminal
+    client = _create_client(owner=owner, terminal=terminal)
+    if client is None:
+        payload, status = format_error_response(ConfigurationError)
+        return jsonify(payload), status
+
+    try:
+        current_flights = _load_all_flights(client)
+        payload = build_status_responses(current_flights)
+        challenge_ids_by_template_name = _challenge_ids_by_template_name()
+        for entry in payload:
+            entry["challenge_ids"] = challenge_ids_by_template_name.get(entry["flight_plan"], [])
+        duration_ms = int((time.time() - started) * 1000)
+        log(
+            "flight_ops",
+            "event=status_sync duration_ms={duration} method={method}",
+            duration=duration_ms,
+            method=request.method,
+        )
+        return jsonify(payload), 200
+    except DispatcherError as exc:
+        detail = exc.message
+        payload, status, headers = _dispatcher_error_response(exc)
+    except Exception as exc:
+        detail = str(exc)
+        payload, status = format_error_response(UnknownError)
+        headers = {}
+
+    log(
+        "flight_ops",
+        "event=status_sync_error status={status} error={error}",
+        status=status,
+        error=detail,
+    )
+    return _error_response(payload, status, headers)
 
 
 @blueprint.route("/api/flight_ops/<challenge>", methods=["GET", "POST"])
@@ -226,7 +331,23 @@ def challenge_status(challenge):
                 payload, status = format_error_response(InvalidRequest)
                 return jsonify(payload), status
 
-        current_flight = _load_current_flight(client, challenge)
+        try:
+            current_flight = _load_current_flight(client, challenge)
+        except DispatcherError as exc:
+            if request.method != "POST":
+                raise
+            
+            log(
+                "flight_ops",
+                "event=post_action_status_read_failed challenge={challenge} error={error}",
+                challenge=challenge,
+                error=exc.message,
+            )
+            payload = build_status_response(None)
+            payload["flight_plan"] = challenge
+            payload["status"] = "unknown"
+            return jsonify(payload), 200
+
         payload = build_status_response(current_flight)
         duration_ms = int((time.time() - started) * 1000)
         log(
@@ -239,37 +360,21 @@ def challenge_status(challenge):
         )
         return jsonify(payload), 200
     except DispatcherError as exc:
-        if exc.status_code in (401, 403):
-            payload, status = format_error_response(NotAuthenticatedError)
-            return jsonify(payload), status
-        if exc.status_code == 429:
-            if exc.message:
-                log("flight_ops", "dispatcher rate limit: {error}", error=exc.message)
-            payload, status = format_error_response(RateLimitError)
-            
-            # Add Retry-After header if available
-            retry_after = exc.retryAfter
-            if retry_after:
-                response = jsonify(payload)
-                response.status_code = status
-                response.headers["Retry-After"] = retry_after
-                return response
-            
-            return jsonify(payload), status
-        if exc.status_code in (500, 502, 503, 504):
-            if exc.message:
-                log("flight_ops", "dispatcher unavailable: {error}", error=exc.message)
-            payload, status = format_error_response(UpstreamUnavailable)
-            return jsonify(payload), status
-
-        if exc.message:
-            log("flight_ops", "dispatcher error: {error}", error=exc.message)
-        payload, status = format_error_response(UnknownError)
-        return jsonify(payload), status
+        detail = exc.message
+        payload, status, headers = _dispatcher_error_response(exc)
     except Exception as exc:
-        log("flight_ops", "unknown error: {error}", error=exc)
+        detail = str(exc)
         payload, status = format_error_response(UnknownError)
-        return jsonify(payload), status
+        headers = {}
+
+    log(
+        "flight_ops",
+        "event=status_sync_error challenge={challenge} status={status} error={error}",
+        challenge=challenge,
+        status=status,
+        error=detail,
+    )
+    return _error_response(payload, status, headers)
 
 
 @blueprint.route("/admin/flight_ops", methods=["GET", "POST"])
